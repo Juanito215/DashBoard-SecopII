@@ -1,0 +1,16 @@
+# Entornos virtuales
+env/
+venv/
+.env
+
+# Cachés de Python y Streamlit
+__pycache__/
+*.pyc
+.streamlit/
+.pytest_cache/
+
+# Datos masivos
+data/raw/*.csv
+data/processed/*.csv
+*.parquet
+*.pkl
