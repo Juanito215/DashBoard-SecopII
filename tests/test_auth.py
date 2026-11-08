@@ -142,3 +142,56 @@ def test_login_credenciales_vacias():
     exito, usuario, _ = AuthController.autenticar("", "")
     assert exito is False
     assert usuario is None
+
+
+def test_cierre_sesion_controlador():
+    """
+    HU-03: Valida que el método cerrar_sesion de AuthController ejecute
+    el procedimiento de terminación de sesión y retorne True.
+    """
+    resultado = AuthController.cerrar_sesion(email="admin@secopanalytics.gov.co")
+    assert resultado is True, "El cierre de sesión en AuthController debe retornar True"
+
+    # Cierre anónimo o sin correo también debe ser seguro
+    resultado_anonimo = AuthController.cerrar_sesion()
+    assert resultado_anonimo is True
+
+
+def test_cierre_sesion_flujo_completo_app():
+    """
+    HU-03: Valida mediante Streamlit AppTest el ciclo completo de cierre de sesión:
+    1. Login exitoso
+    2. Existencia de sesión y datos en memoria
+    3. Clic en botón 'Cerrar Sesión (HU-03)'
+    4. Limpieza total de sesión (session_state) y retorno inmediato al login
+    """
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+
+    # 1. Cargar aplicación en login (resolviendo ruta absoluta a app.py en la raíz)
+    ruta_app = str(Path(__file__).resolve().parent.parent / "app.py")
+    at = AppTest.from_file(ruta_app).run()
+    assert at.session_state.get("autenticado") is False
+    assert len(at.text_input) == 2
+
+    # 2. Iniciar sesión como Analista
+    at.text_input[0].input("analista@secopanalytics.gov.co")
+    at.text_input[1].input("Secop2026*")
+    at.button[0].click().run()
+
+    # Verificar sesión activa
+    assert at.session_state.get("autenticado") is True
+    assert at.session_state.get("usuario_datos") is not None
+    assert at.session_state.get("usuario_datos")["rol"] == "Analista_BI"
+
+    # 3. Localizar botón de cierre de sesión (HU-03)
+    btn_logout = [b for b in at.button if "Cerrar Sesión" in b.label][0]
+    btn_logout.click().run()
+
+    # 4. Validar limpieza integral y bloqueo de navegación
+    assert at.session_state.get("autenticado") is False
+    assert at.session_state.get("usuario_datos") is None
+    # Comprobar que reaparece el formulario de login y no hay excepciones
+    assert len(at.exception) == 0
+    assert len(at.text_input) == 2
+

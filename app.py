@@ -4,8 +4,8 @@ Universidad del Valle – Sede Tuluá | Facultad de Ingeniería | Ingeniería de
 Asignatura: Técnicas de Pruebas de Software
 
 Punto de Entrada Principal de la Aplicación Streamlit
-Implementación de HU-01: Autenticación con MongoDB y RBAC
-Validación de Caso de Prueba de Aceptación: PA-ALFA-001
+- Implementación de HU-01: Autenticación con MongoDB y RBAC (PA-ALFA-001)
+- Implementación de HU-02: Pipeline ETL y Carga en MongoDB (PA-ALFA-002)
 """
 import streamlit as st
 from src.controllers.auth_controller import AuthController
@@ -16,6 +16,8 @@ from src.views.auth_view import (
     render_telemetria_pa_alfa_001,
     render_rbac_modules_preview,
 )
+from src.views.etl_view import render_etl_view
+from src.views.ingestion_view import render_ingestion_view
 
 # 1. Configuración de página de Streamlit
 st.set_page_config(
@@ -47,8 +49,17 @@ st.markdown(
     }
     /* Estilo para métricas */
     div[data-testid="stMetricValue"] {
-        font-size: 1.6rem !important;
+        font-size: 1.55rem !important;
         font-weight: 700;
+    }
+    /* Pestañas */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding-top: 10px;
+        padding-bottom: 10px;
+        font-weight: 600;
     }
     </style>
     """,
@@ -84,10 +95,16 @@ def procesar_login(email: str, password_plana: str) -> None:
 
 
 def procesar_logout() -> None:
-    """Ejecuta el cierre de sesión seguro (HU-03)."""
-    st.session_state.autenticado = False
-    st.session_state.usuario_datos = None
-    st.session_state.latencia_auth_ms = 0.0
+    """
+    Ejecuta el cierre de sesión seguro (HU-03).
+    - Registra el cierre en el controlador de auditoría.
+    - Limpia íntegramente todas las claves de st.session_state (st.session_state.clear()).
+    - Redirige de inmediato a la pantalla de login con st.rerun().
+    """
+    usuario_actual = st.session_state.get("usuario_datos", {})
+    email_actual = usuario_actual.get("email") if isinstance(usuario_actual, dict) else None
+    AuthController.cerrar_sesion(email=email_actual)
+    st.session_state.clear()
     st.rerun()
 
 
@@ -100,7 +117,7 @@ if not st.session_state.autenticado:
 
 
 # ==============================================================================
-# 4. FLUJO AUTENTICADO: DASHBOARD Y PANEL DE TELEMETRÍA (PA-ALFA-001)
+# 4. FLUJO AUTENTICADO: DASHBOARD, RBAC Y MÓDULOS DEL SISTEMA
 # ==============================================================================
 usuario = st.session_state.usuario_datos
 latencia_ms = st.session_state.latencia_auth_ms
@@ -111,10 +128,26 @@ render_auth_sidebar(usuario, on_logout_callback=procesar_logout)
 # Encabezado institucional de bienvenida
 render_welcome_header(usuario)
 
-# Panel de Telemetría para el Caso de Prueba PA-ALFA-001
-render_telemetria_pa_alfa_001(latencia_ms, usuario)
+# Pestañas principales de navegación del sistema
+tab_general, tab_ingesta, tab_etl = st.tabs([
+    "📊 Panel General y Telemetría PA-ALFA-001 (HU-01)",
+    "📥 Ingesta Masiva y Repositorio Singleton (HU-04)",
+    "⚙️ Pipeline ETL y Carga NoSQL (HU-02 | PA-ALFA-002)"
+])
 
-st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+with tab_general:
+    # Panel de Telemetría para el Caso de Prueba PA-ALFA-001
+    render_telemetria_pa_alfa_001(latencia_ms, usuario)
 
-# Vista previa de disponibilidad de módulos según el rol (RBAC)
-render_rbac_modules_preview(usuario.get("permisos", []))
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+
+    # Vista previa de disponibilidad de módulos según el rol (RBAC)
+    render_rbac_modules_preview(usuario.get("permisos", []))
+
+with tab_ingesta:
+    # Módulo de Ingesta Masiva y Repositorio Singleton (HU-04)
+    render_ingestion_view(usuario)
+
+with tab_etl:
+    # Módulo de Gestión ETL y Carga Masiva en MongoDB (HU-02)
+    render_etl_view(usuario)

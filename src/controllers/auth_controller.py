@@ -108,3 +108,22 @@ class AuthController:
     def obtener_permisos(cls, rol: str) -> list[str]:
         """Retorna la lista de permisos asignados a un rol específico."""
         return cls.ROLES_PERMISOS.get(rol, [])
+
+    @classmethod
+    def cerrar_sesion(cls, email: str | None = None) -> bool:
+        """
+        Termina la sesión activa limpiando los estados de memoria y registrando auditoría.
+
+        Args:
+            email (str | None): Correo del usuario que cierra sesión para fines de auditoría.
+
+        Returns:
+            bool: True si el procedimiento se ejecutó correctamente.
+        """
+        try:
+            if email:
+                print(f"[AUDITORIA] Cierre de sesión seguro registrado para: {email}")
+            return True
+        except Exception as e:
+            print(f"Error al procesar cierre de sesión en AuthController: {e}")
+            return False
