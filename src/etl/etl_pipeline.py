@@ -16,6 +16,9 @@ import numpy as np
 import pandas as pd
 from pymongo import UpdateOne
 from src.database.connection import MongoConnectionSingleton
+from src.etl.cleaner import DataCleaner
+from src.etl.transformer import DataTransformer
+from src.etl.feature_engineering import FeatureEngineer
 
 
 class SecopETLPipeline:
@@ -101,6 +104,9 @@ class SecopETLPipeline:
 
     def __init__(self) -> None:
         self.ultimas_metricas: dict[str, Any] = {}
+        self.ultimas_metricas_calidad: dict[str, Any] = {}
+        self.ultimas_metricas_transformacion: dict[str, Any] = {}
+        self.ultimas_metricas_features: dict[str, Any] = {}
 
     @staticmethod
     def _normalizar_texto(serie: pd.Series, a_mayusculas: bool = True) -> pd.Series:
@@ -244,7 +250,7 @@ class SecopETLPipeline:
 
     def transformar_datos(self, df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
         """
-        Fase 2: Transformación, depuración vectorizada y feature engineering (CRISP-DM).
+        Fase 2: Transformación, depuración vectorizada y feature engineering (CRISP-DM / HU-05 / HU-06 / HU-07).
 
         Returns:
             tuple[pd.DataFrame, int, int]:
@@ -254,57 +260,37 @@ class SecopETLPipeline:
         """
         total_leidos = len(df)
 
-        # 1. Deduplicación por id_contrato
-        df_limpio = df.drop_duplicates(subset=["id_contrato"], keep="first").copy()
+        # 1. Saneamiento integral mediante DataCleaner (HU-05)
+        df_limpio, metricas_calidad = DataCleaner.ejecutar_limpieza_completa(
+            df, col_id="id_contrato", col_cuantia="cuantia_inicial"
+        )
+        self.ultimas_metricas_calidad = metricas_calidad
 
-        # 2. Limpieza y casting financiero en Pesos Colombianos (COP)
-        df_limpio["cuantia_inicial"] = self._limpiar_moneda_vectorizado(df_limpio["cuantia_inicial"])
-        df_limpio["valor_adiciones"] = self._limpiar_moneda_vectorizado(df_limpio["valor_adiciones"])
+        # 2. Transformación de formatos financieros y cronológicos con DataTransformer (HU-06)
+        df_transformado, metricas_trans = DataTransformer.transformar_lote_completo(
+            df_limpio, col_fecha="fecha_firma"
+        )
+        self.ultimas_metricas_transformacion = metricas_trans
+        df_transformado["fecha_firma_dt"] = df_transformado["fecha_firma"]
 
-        # 3. Descarte de registros con cuantía corrupta o menor/igual a cero
-        mascara_cuantia_valida = df_limpio["cuantia_inicial"] > 0
-        df_limpio = df_limpio[mascara_cuantia_valida].copy()
+        # 3. Ingeniería de Características con FeatureEngineer (HU-07)
+        df_enriquecido, metricas_features = FeatureEngineer.aplicar_feature_engineering_lote(
+            df_transformado, col_plazo="plazo_ejecucion_dias"
+        )
+        self.ultimas_metricas_features = metricas_features
 
-        # 4. Limpieza de texto en entidades y contratistas
-        df_limpio["nombre_entidad"] = self._normalizar_texto(df_limpio["nombre_entidad"], a_mayusculas=True)
-        df_limpio["proveedor"] = self._normalizar_texto(df_limpio["proveedor"], a_mayusculas=True)
-        df_limpio["departamento"] = self._normalizar_texto(df_limpio["departamento"], a_mayusculas=True)
-        df_limpio["municipio"] = self._normalizar_texto(df_limpio["municipio"], a_mayusculas=True)
-        df_limpio["modalidad"] = self._normalizar_texto(df_limpio["modalidad"], a_mayusculas=False)
-        df_limpio["tipo_contrato"] = self._normalizar_texto(df_limpio["tipo_contrato"], a_mayusculas=False)
-        df_limpio["estado"] = self._normalizar_texto(df_limpio["estado"], a_mayusculas=False)
-        df_limpio["orden_entidad"] = self._normalizar_texto(df_limpio["orden_entidad"], a_mayusculas=False)
-        df_limpio["sector"] = self._normalizar_texto(df_limpio["sector"], a_mayusculas=False)
-        df_limpio["codigo_unspsc"] = df_limpio["codigo_unspsc"].fillna("No Registrado").astype(str).str.strip()
+        # 4. Identificadores alfanuméricos y campos complementarios
+        df_enriquecido["nit_entidad"] = df_enriquecido["nit_entidad"].fillna("0").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        df_enriquecido["documento_proveedor"] = df_enriquecido["documento_proveedor"].fillna("0").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        df_enriquecido["codigo_proceso"] = df_enriquecido["codigo_proceso"].fillna("").astype(str).str.strip()
+        df_enriquecido["id_contrato"] = df_enriquecido["id_contrato"].astype(str).str.strip()
+        df_enriquecido["codigo_unspsc"] = df_enriquecido["codigo_unspsc"].fillna("No Registrado").astype(str).str.strip()
 
-        # Identificadores alfanuméricos
-        df_limpio["nit_entidad"] = df_limpio["nit_entidad"].fillna("0").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-        df_limpio["documento_proveedor"] = df_limpio["documento_proveedor"].fillna("0").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-        df_limpio["codigo_proceso"] = df_limpio["codigo_proceso"].fillna("").astype(str).str.strip()
-        df_limpio["id_contrato"] = df_limpio["id_contrato"].astype(str).str.strip()
+        # 5. Tipado booleano de pyme
+        df_enriquecido["es_pyme"] = self._parsear_booleano(df_enriquecido["es_pyme"])
 
-        # 5. Normalización de fechas y extracción de dimensión temporal
-        fechas_dt = pd.to_datetime(df_limpio["fecha_firma"], errors="coerce")
-        # Imputar fechas nulas con fecha semilla por defecto (2022-01-01)
-        fechas_dt = fechas_dt.fillna(pd.Timestamp("2022-01-01"))
-        df_limpio["fecha_firma_dt"] = fechas_dt
-
-        df_limpio["anio_vigencia"] = fechas_dt.dt.year.astype(int)
-        df_limpio["mes_vigencia"] = fechas_dt.dt.month.astype(int)
-        df_limpio["trimestre"] = fechas_dt.dt.quarter.astype(int)
-
-        # 6. Variables derivadas (Feature Engineering)
-        df_limpio["cuantia_final"] = df_limpio["cuantia_inicial"] + df_limpio["valor_adiciones"]
-        df_limpio["tiene_adicion"] = df_limpio["valor_adiciones"] > 0
-        df_limpio["plazo_ejecucion_dias"] = pd.to_numeric(
-            df_limpio["plazo_ejecucion_dias"], errors="coerce"
-        ).fillna(0).astype(int).clip(lower=0)
-
-        # 7. Tipado booleano de es_pyme
-        df_limpio["es_pyme"] = self._parsear_booleano(df_limpio["es_pyme"])
-
-        total_descartados = total_leidos - len(df_limpio)
-        return df_limpio, total_leidos, total_descartados
+        total_descartados = total_leidos - len(df_enriquecido)
+        return df_enriquecido, total_leidos, total_descartados
 
     def estructurar_esquema_estrella(self, df_limpio: pd.DataFrame) -> list[dict[str, Any]]:
         """
@@ -403,6 +389,10 @@ class SecopETLPipeline:
         """Crea los 4 índices analíticos optimizados para los 10 filtros dinámicos."""
         try:
             coleccion.create_index(
+                [("cuantia_inicial", 1)],
+                name="idx_cuantia_inicial"
+            )
+            coleccion.create_index(
                 [("geografia.departamento", 1), ("tiempo.anio_vigencia", -1)],
                 name="idx_geografia_tiempo"
             )
@@ -417,6 +407,22 @@ class SecopETLPipeline:
             coleccion.create_index(
                 [("entidad.nombre", "text"), ("proveedor.nombre_razon_social", "text")],
                 name="idx_text_entidad_proveedor"
+            )
+            coleccion.create_index(
+                [("entidad.nit", 1)],
+                name="idx_entidad_nit"
+            )
+            coleccion.create_index(
+                [("entidad.nombre", 1)],
+                name="idx_entidad_nombre"
+            )
+            coleccion.create_index(
+                [("proveedor.documento", 1)],
+                name="idx_proveedor_documento"
+            )
+            coleccion.create_index(
+                [("proveedor.nombre_razon_social", 1)],
+                name="idx_proveedor_nombre"
             )
         except Exception as e:
             print(f"Advertencia al crear índices en 'contratos': {e}")
@@ -471,6 +477,9 @@ class SecopETLPipeline:
             "total_insertados": total_insertados,
             "tiempo_segundos": tiempo_total,
             "tasa_rendimiento_rps": round(total_insertados / tiempo_total, 1) if tiempo_total > 0 else 0.0,
+            "calidad_datos": self.ultimas_metricas_calidad,
+            "transformacion_formatos": self.ultimas_metricas_transformacion,
+            "feature_engineering": self.ultimas_metricas_features,
             "estado": "APROBADA"
         }
         self.ultimas_metricas = metricas
