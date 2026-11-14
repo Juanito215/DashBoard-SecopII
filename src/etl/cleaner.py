@@ -146,7 +146,7 @@ class DataCleaner:
             if col not in df_norm.columns:
                 continue
 
-            serie = df_norm[col].fillna("").astype(str).str.strip()
+            serie = df_norm[col].astype(object).fillna("").astype(str).str.strip()
             # Reducción de espacios intermedios múltiples a un único espacio
             serie = serie.str.replace(r"\s+", " ", regex=True)
             serie_upper = serie.str.upper()

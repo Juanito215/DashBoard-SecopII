@@ -683,10 +683,158 @@ class ConsultaSecopBuilder:
         """Alias semántico de con_proveedor."""
         return self.con_proveedor(criterio)
 
+    def con_es_pyme(self, solo_pyme: bool | str | None) -> ConsultaSecopBuilder:
+        """
+        HU-16: Aplica filtro por participación de micro, pequeñas y medianas empresas (PYME).
+
+        - Acepta booleano (True / False), None, o etiquetas de UI ('Todas', 'Solo PYMES', 'No PYMES').
+        - Si solo_pyme es None o indica todas las empresas, no aplica restricción.
+        - Mapea al campo 'proveedor.es_pyme' en MongoDB y a la columna correspondiente en Pandas.
+        - Registra latencia acumulada en milisegundos y actualiza los filtros aplicados.
+
+        Args:
+            solo_pyme (bool | str | None): Criterio de filtrado PYME.
+
+        Returns:
+            ConsultaSecopBuilder: Instancia actual para encadenamiento fluido.
+        """
+        if solo_pyme is None:
+            return self
+
+        valor_bool: bool | None = None
+        if isinstance(solo_pyme, bool):
+            valor_bool = solo_pyme
+        elif isinstance(solo_pyme, str):
+            limpio = solo_pyme.strip().lower()
+            if limpio in ["todas", "todas las empresas", "todos", ""]:
+                return self
+            if limpio in ["solo pymes", "solo pyme", "sí", "si", "true", "pyme", "pymes"]:
+                valor_bool = True
+            elif limpio in ["no pymes", "no pyme", "no", "false", "gran empresa", "no pymes / gran empresa"]:
+                valor_bool = False
+            else:
+                return self
+        else:
+            return self
+
+        inicio = time.perf_counter()
+
+        col_pyme = None
+        for cand in ["es_pyme", "proveedor.es_pyme", "pyme", "es pyme", "es_mipyme"]:
+            if cand in self._df_filtrado.columns:
+                col_pyme = cand
+                break
+
+        if col_pyme is not None:
+            serie = self._df_filtrado[col_pyme]
+            if pd.api.types.is_bool_dtype(serie):
+                mascara = (serie == valor_bool)
+            else:
+                mascara = (
+                    serie.map(
+                        lambda v: str(v).strip().lower() in ["si", "sí", "true", "1", "s", "verdadero", "yes"]
+                    )
+                    == valor_bool
+                )
+            self._df_filtrado = self._df_filtrado[mascara]
+
+        self._query_mongo["proveedor.es_pyme"] = valor_bool
+        self._filtros_aplicados.append(f"proveedor.es_pyme == {valor_bool}")
+
+        duracion_ms = (time.perf_counter() - inicio) * 1000.0
+        self._tiempo_ms += duracion_ms
+
+        return self
+
+    def filtrar_pyme(self, solo_pyme: bool | str | None) -> ConsultaSecopBuilder:
+        """Alias semántico de con_es_pyme."""
+        return self.con_es_pyme(solo_pyme)
+
+    def con_codigo_unspsc(self, codigo_unspsc: str | None) -> ConsultaSecopBuilder:
+        """
+        HU-17: Aplica filtro por código completo o familia del clasificador UNSPSC.
+        - Soporta búsqueda por prefijo (ej. '72' segmento, '7214' familia, '72141103' producto).
+        - Tolera códigos con prefijo 'V1.' proveniente de SECOP II.
+        - Mapea al subdocumento 'clasificacion.codigo_unspsc' en MongoDB.
+        - Si el argumento es None, vacío o solo espacios, no aplica restricción.
+        - Registra la latencia acumulada en milisegundos.
+
+        Args:
+            codigo_unspsc (str | None): Código completo de 8 dígitos o prefijo de familia/segmento.
+
+        Returns:
+            ConsultaSecopBuilder: Instancia actual para encadenamiento fluido.
+        """
+        if codigo_unspsc is None:
+            return self
+
+        codigo_str = str(codigo_unspsc).strip()
+        if not codigo_str:
+            return self
+
+        # Limpiar espacios y remover posible prefijo 'V1.' ingresado por el usuario
+        codigo_limpio = re.sub(r"^v1\.", "", codigo_str, flags=re.IGNORECASE)
+        codigo_limpio = re.sub(r"[^\w]", "", codigo_limpio)
+
+        if not codigo_limpio:
+            return self
+
+        inicio = time.perf_counter()
+
+        col_unspsc = None
+        for cand in [
+            "codigo_unspsc",
+            "clasificacion.codigo_unspsc",
+            "codigo_de_categoria_principal",
+            "codigo_principal_categoria",
+            "unspsc",
+            "categoria_principal",
+        ]:
+            if cand in self._df_filtrado.columns:
+                col_unspsc = cand
+                break
+
+        if col_unspsc is None:
+            for col in self._df_filtrado.columns:
+                if "unspsc" in col.lower() or "categoria_principal" in col.lower():
+                    col_unspsc = col
+                    break
+
+        if col_unspsc is not None and col_unspsc in self._df_filtrado.columns:
+            # Normalizar columna removiendo 'V1.' si existe para comparar prefijo exacto
+            serie_codigos = (
+                self._df_filtrado[col_unspsc]
+                .astype(str)
+                .str.strip()
+                .str.replace(r"^[Vv]1\.", "", regex=True)
+            )
+            mascara = serie_codigos.str.startswith(codigo_limpio, na=False)
+            self._df_filtrado = self._df_filtrado[mascara]
+
+        patron_escapado = re.escape(codigo_limpio)
+        self._query_mongo["clasificacion.codigo_unspsc"] = {
+            "$regex": f"^(V1\\.)?{patron_escapado}",
+            "$options": "i",
+        }
+        self._filtros_aplicados.append(f"clasificacion.codigo_unspsc == '{codigo_limpio}'")
+
+        duracion_ms = (time.perf_counter() - inicio) * 1000.0
+        self._tiempo_ms += duracion_ms
+
+        return self
+
+    def filtrar_unspsc(self, codigo_unspsc: str | None) -> ConsultaSecopBuilder:
+        """Alias semántico de con_codigo_unspsc."""
+        return self.con_codigo_unspsc(codigo_unspsc)
+
 
     def reset(self) -> ConsultaSecopBuilder:
         """
-        Restablece el estado del builder al DataFrame original sin filtros.
+        HU-18: Restablece el constructor de consultas a su estado inicial sin filtros activos.
+        - Restaura el DataFrame filtrado a partir del DataFrame original en memoria.
+        - Limpia por completo el diccionario de consulta $match para MongoDB.
+        - Reinicia las métricas de latencia y la lista de filtros aplicados.
+        - Permite reutilizar la misma instancia del Builder en ciclos consecutivos.
         
         Returns:
             ConsultaSecopBuilder: Instancia reiniciada.

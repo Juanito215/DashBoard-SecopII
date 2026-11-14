@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.database.data_repository import get_data_repository
+from src.controllers.analytics_controller import AnalyticsController
 from src.views.components import render_topbar, render_kpi_card, get_status_badge_html
 
 
@@ -45,47 +46,26 @@ def render_dashboard_view(usuario: dict[str, Any]) -> None:
     col_adiciones = "valor_adiciones" if "valor_adiciones" in df.columns else None
     col_tiene_adicion = "tiene_adicion" if "tiene_adicion" in df.columns else None
 
-    # 2. Cálculo de KPIs Ejecutivos
-    total_contratos = len(df)
-    monto_total = pd.to_numeric(df[col_cuantia], errors="coerce").sum() if col_cuantia else 0.0
-    adiciones_total = pd.to_numeric(df[col_adiciones], errors="coerce").sum() if col_adiciones else 0.0
+    # 2. Cálculo de KPIs Ejecutivos (HU-19)
+    kpis = AnalyticsController.calcular_kpis_volumen_presupuesto(df)
 
-    if col_tiene_adicion and col_tiene_adicion in df.columns:
-        con_adicion = df[col_tiene_adicion].astype(bool).sum()
-        tasa_adicion = (con_adicion / total_contratos * 100.0) if total_contratos > 0 else 0.0
-    else:
-        tasa_adicion = 14.2
-
-    # Formateo amigable de montos
-    def _formatear_monto_corto(monto: float) -> str:
-        if monto >= 1_000_000_000_000:
-            return f"$ {monto / 1_000_000_000_000:.2f} B"
-        elif monto >= 1_000_000_000:
-            return f"$ {monto / 1_000_000_000:.2f} M"
-        elif monto >= 1_000_000:
-            return f"$ {monto / 1_000_000:.1f} M"
-        return f"$ {monto:,.0f}"
-
-    monto_str = _formatear_monto_corto(monto_total)
-    adiciones_str = _formatear_monto_corto(adiciones_total)
-
-    # 3. Fila Superior: 4 Tarjetas KPI (Figma style)
+    # 3. Fila Superior: 4 Tarjetas KPI de Volumen y Presupuesto Global (Figma style)
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
         render_kpi_card(
-            titulo="Total Contratos",
-            valor=f"{total_contratos:,}".replace(",", "."),
-            tendencia="Muestra consolidada",
+            titulo="Total de Contratos Celebrados",
+            valor=f"{kpis['total_contratos']:,}".replace(",", "."),
+            tendencia="Procesos formalizados",
             icono_key="contract",
             color_circulo="blue"
         )
 
     with c2:
         render_kpi_card(
-            titulo="Monto Contratado",
-            valor=monto_str,
-            tendencia="Pesos colombianos (COP)",
+            titulo="Cuantía Inicial Adjudicada",
+            valor=kpis["cuantia_inicial_fmt"],
+            tendencia="Monto base contratado",
             icono_key="money",
             color_circulo="amber"
         )
@@ -93,7 +73,7 @@ def render_dashboard_view(usuario: dict[str, Any]) -> None:
     with c3:
         render_kpi_card(
             titulo="Adiciones Presupuestales",
-            valor=adiciones_str,
+            valor=kpis["valor_adiciones_fmt"],
             tendencia="Recursos suplementarios",
             icono_key="addition",
             color_circulo="orange"
@@ -101,10 +81,10 @@ def render_dashboard_view(usuario: dict[str, Any]) -> None:
 
     with c4:
         render_kpi_card(
-            titulo="Tasa con Sobrecosto",
-            valor=f"{tasa_adicion:.1f}%",
-            tendencia="Procesos modificados",
-            icono_key="risk",
+            titulo="Presupuesto Total Consolidado",
+            valor=kpis["cuantia_final_fmt"],
+            tendencia="Inversión final ejecutada",
+            icono_key="data",
             color_circulo="purple"
         )
 
@@ -336,7 +316,7 @@ def render_dashboard_view(usuario: dict[str, Any]) -> None:
             for ent_nombre, total_gasto in top_ent.items():
                 porcentaje_barra = (total_gasto / max_top * 100.0) if max_top > 0 else 0
                 nombre_corto = str(ent_nombre).title()[:34]
-                gasto_formateado = _formatear_monto_corto(total_gasto)
+                gasto_formateado = AnalyticsController.formatear_cop(total_gasto, compacto=True)
 
                 st.markdown(
                     f"""

@@ -106,8 +106,8 @@ OPCIONES_MENU = [
     "Dashboard General",
     "Explorador de Contratos",
     "Analítica y Tendencias",
-    "Gestión de Datos",
-    "Inteligencia Predictiva"
+    "Inteligencia Predictiva",
+    "Gestión de Datos"
 ]
 
 with st.sidebar:
@@ -145,9 +145,9 @@ elif menu_seleccionado == "Explorador de Contratos":
     render_consultas_view(usuario)
 elif menu_seleccionado == "Analítica y Tendencias":
     render_analytics_view(usuario)
-elif menu_seleccionado == "Gestión de Datos":
-    render_data_management_view(usuario)
 elif menu_seleccionado == "Inteligencia Predictiva":
     render_predictive_view(usuario)
+elif menu_seleccionado == "Gestión de Datos":
+    render_data_management_view(usuario)
 else:
     render_dashboard_view(usuario)

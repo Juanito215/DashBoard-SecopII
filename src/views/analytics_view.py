@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.database.data_repository import get_data_repository
+from src.controllers.analytics_controller import AnalyticsController
 from src.views.components import render_topbar, render_kpi_card
 
 
@@ -51,46 +52,130 @@ def render_analytics_view(usuario: dict[str, Any]) -> None:
     color_sub = "#94A3B8" if es_oscuro else "#475569"
     color_grid = "#334155" if es_oscuro else "#F1F5F9"
 
-    # Fila 1: KPIs Rápidos de Tendencia
-    total_contratos = len(df)
-    monto_total = pd.to_numeric(df[col_cuantia], errors="coerce").sum() if col_cuantia else 0.0
+    # Fila 1: KPIs de Sobrecostos y Adiciones Presupuestales (HU-20)
+    kpis_adiciones = AnalyticsController.calcular_kpis_sobrecostos_adiciones(df)
 
-    if col_pyme and col_pyme in df.columns:
-        pymes_count = df[col_pyme].astype(bool).sum()
-        pyme_pct = (pymes_count / total_contratos * 100.0) if total_contratos > 0 else 0.0
-    else:
-        pyme_pct = 68.4
-
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         render_kpi_card(
-            titulo="Monto Total Analizado",
-            valor=f"$ {monto_total / 1_000_000_000:,.1f} B COP",
-            tendencia="Gasto consolidado",
+            titulo="Monto Total de Adiciones",
+            valor=kpis_adiciones["monto_adiciones_fmt"],
+            tendencia="Recursos suplementarios ejecutados",
             icono_key="money",
-            color_circulo="blue"
+            color_circulo="amber"
         )
     with c2:
         render_kpi_card(
-            titulo="Participación PYME",
-            valor=f"{pyme_pct:.1f}%",
-            tendencia="Inclusión empresarial",
-            icono_key="addition",
-            color_circulo="amber"
+            titulo="Contratos Adicionados",
+            valor=kpis_adiciones["porcentaje_adicionados_fmt"],
+            tendencia=f"{kpis_adiciones['contratos_con_adicion']:,} de {kpis_adiciones['total_contratos']:,} procesos".replace(",", "."),
+            icono_key="risk",
+            color_circulo="orange"
         )
     with c3:
-        promedio_contrato = (monto_total / total_contratos) if total_contratos > 0 else 0.0
         render_kpi_card(
-            titulo="Valor Promedio por Contrato",
-            valor=f"$ {promedio_contrato / 1_000_000:,.1f} M COP",
-            tendencia="Cuantía media adjudicada",
+            titulo="Incremento Promedio",
+            valor=kpis_adiciones["incremento_promedio_fmt"],
+            tendencia="Sobrecosto sobre valor base",
+            icono_key="analytics",
+            color_circulo="purple"
+        )
+    with c4:
+        render_kpi_card(
+            titulo="Valor Promedio por Adición",
+            valor=kpis_adiciones["adicion_promedio_fmt"],
+            tendencia="Ticket medio adicionado",
+            icono_key="addition",
+            color_circulo="blue"
+        )
+
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+
+    # Fila 2: Tendencia Central y Dispersión de Cuantías (HU-21)
+    kpis_tendencia = AnalyticsController.calcular_kpis_promedio_mediana(df)
+
+    t1, t2, t3, t4 = st.columns(4)
+    with t1:
+        render_kpi_card(
+            titulo="Cuantía Promedio",
+            valor=kpis_tendencia["cuantia_promedio_fmt"],
+            tendencia="Media aritmética por proceso",
+            icono_key="money",
+            color_circulo="blue"
+        )
+    with t2:
+        render_kpi_card(
+            titulo="Mediana Contractual",
+            valor=kpis_tendencia["cuantia_mediana_fmt"],
+            tendencia=f"IQR: {kpis_tendencia['iqr_fmt']}",
             icono_key="contract",
+            color_circulo="amber"
+        )
+    with t3:
+        render_kpi_card(
+            titulo="Ratio de Distorsión",
+            valor=kpis_tendencia["ratio_distorsion_fmt"],
+            tendencia=kpis_tendencia["nivel_sesgo"],
+            icono_key="risk",
+            color_circulo="orange"
+        )
+    with t4:
+        render_kpi_card(
+            titulo="Mayor Cuantía Adjudicada",
+            valor=kpis_tendencia["cuantia_maxima_fmt"],
+            tendencia="Techo de contratación (Megaproyecto)",
+            icono_key="data",
             color_circulo="purple"
         )
 
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
-    # Fila 2: Top 10 Entidades Compradoras (Horizontal Bar) y Tipología Contractual (Donut)
+    # Gráfica Descriptiva 1: Gasto Público Acumulado por Modalidad de Contratación (HU-22)
+    st.markdown(
+        """
+        <div class="executive-card">
+            <div class="card-header-flex">
+                <h3 class="card-title">Distribución del Gasto por Modalidad de Selección</h3>
+                <span class="card-action">Auditoría de Concentración Presupuestal</span>
+            </div>
+        """,
+        unsafe_allow_html=True
+    )
+    fig_modalidad = AnalyticsController.generar_grafica_gasto_modalidad(df, es_oscuro=es_oscuro)
+    st.plotly_chart(fig_modalidad, use_container_width=True, config={"displayModeBar": False})
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+
+    # Gráfica Descriptiva 2: Serie Temporal del Gasto 2021-2026 (HU-23)
+    st.markdown(
+        """
+        <div class="executive-card">
+            <div class="card-header-flex">
+                <h3 class="card-title">Evolución Cronológica del Gasto Contractual</h3>
+                <span class="card-action">Serie Histórica y Estacionalidad Presupuestal</span>
+            </div>
+        """,
+        unsafe_allow_html=True
+    )
+    col_ctrl_left, col_ctrl_right = st.columns([7, 3])
+    with col_ctrl_right:
+        granularidad_sel = st.radio(
+            "Escala Temporal:",
+            options=["Mensual", "Anual"],
+            horizontal=True,
+            key="radio_granularidad_analytics",
+            label_visibility="collapsed"
+        )
+    fig_ts = AnalyticsController.generar_grafica_serie_temporal(
+        df, granularidad=granularidad_sel, es_oscuro=es_oscuro
+    )
+    st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+
+    # Fila 3: Top 10 Entidades Compradoras (Horizontal Bar) y Tipología Contractual (Donut)
     col_b1, col_b2 = st.columns([60, 40])
 
     with col_b1:
@@ -98,53 +183,14 @@ def render_analytics_view(usuario: dict[str, Any]) -> None:
             """
             <div class="executive-card">
                 <div class="card-header-flex">
-                    <h3 class="card-title">Top 10 Entidades con Mayor Asignación Presupuestal</h3>
-                    <span class="card-action">Presupuesto en Millones COP</span>
+                    <h3 class="card-title">Top 10 Entidades con Mayor Ejecución Presupuestal</h3>
+                    <span class="card-action">Control de Gestión y Auditoría</span>
                 </div>
             """,
             unsafe_allow_html=True
         )
-
-        if col_ent and col_ent in df.columns and col_cuantia:
-            top10 = (
-                df.groupby(col_ent)[col_cuantia]
-                .sum()
-                .sort_values(ascending=True)
-                .tail(10)
-            )
-
-            nombres_e = [str(e).title()[:30] for e in top10.index]
-            valores_m = [v / 1_000_000 for v in top10.values]
-
-            fig_bar = go.Figure(go.Bar(
-                x=valores_m,
-                y=nombres_e,
-                orientation="h",
-                marker=dict(
-                    color=valores_m,
-                    colorscale=[[0, "#818CF8"], [1, "#4F46E5"]],
-                    cornerradius=4
-                ),
-                hovertemplate="<b>%{y}</b><br>Asignación: $ %{x:,.1f} M COP<extra></extra>"
-            ))
-
-            fig_bar.update_layout(
-                height=380,
-                margin=dict(l=10, r=20, t=10, b=10),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(
-                    showgrid=True,
-                    gridcolor=color_grid,
-                    ticksuffix=" M",
-                    tickfont=dict(color=color_sub, size=10)
-                ),
-                yaxis=dict(
-                    showgrid=False,
-                    tickfont=dict(color=color_texto, size=11, weight="bold")
-                )
-            )
-            st.plotly_chart(fig_bar, use_container_width=True, config={"displayModeBar": False})
+        fig_top_ent = AnalyticsController.generar_grafica_top_entidades(df, top_n=10, es_oscuro=es_oscuro)
+        st.plotly_chart(fig_top_ent, use_container_width=True, config={"displayModeBar": False})
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_b2:
@@ -152,47 +198,62 @@ def render_analytics_view(usuario: dict[str, Any]) -> None:
             """
             <div class="executive-card">
                 <div class="card-header-flex">
-                    <h3 class="card-title">Concentración por Tipología Contractual</h3>
-                    <span class="card-action">Volumen de Procesos</span>
+                    <h3 class="card-title">Distribución por Estado de los Procesos</h3>
+                    <span class="card-action">Ciclo de Vida Contractual</span>
                 </div>
             """,
             unsafe_allow_html=True
         )
-
-        if col_tipo and col_tipo in df.columns:
-            top_tipos = df[col_tipo].value_counts().head(5)
-            labels_t = [str(t).title()[:22] for t in top_tipos.index]
-            valores_t = list(top_tipos.values)
-
-            fig_donut_t = go.Figure(go.Pie(
-                labels=labels_t,
-                values=valores_t,
-                hole=0.62,
-                marker=dict(colors=["#4F46E5", "#06B6D4", "#F59E0B", "#10B981", "#64748B"]),
-                textinfo="percent",
-                hoverinfo="label+value+percent",
-                hovertemplate="<b>%{label}</b><br>%{value:,} procesos (%{percent})<extra></extra>"
-            ))
-
-            fig_donut_t.update_layout(
-                height=380,
-                margin=dict(l=10, r=10, t=10, b=10),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                legend=dict(
-                    orientation="h",
-                    y=-0.1,
-                    x=0.5,
-                    xanchor="center",
-                    font=dict(size=10, color=color_sub)
-                )
-            )
-            st.plotly_chart(fig_donut_t, use_container_width=True, config={"displayModeBar": False})
+        fig_dona_estados = AnalyticsController.generar_grafica_dona_estados(df, es_oscuro=es_oscuro)
+        st.plotly_chart(fig_dona_estados, use_container_width=True, config={"displayModeBar": False})
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
-    # Fila 3: Distribución Geográfica Departamental
+    # Gráfica Descriptiva 5: Diagramas de Caja (Boxplot) de Dispersión de Cuantías y Plazos (HU-26)
+    st.markdown(
+        """
+        <div class="executive-card">
+            <div class="card-header-flex">
+                <h3 class="card-title">Dispersión y Valores Atípicos por Tipología Contractual</h3>
+                <span class="card-action">Diagnóstico de Cuartiles y Outliers</span>
+            </div>
+        """,
+        unsafe_allow_html=True
+    )
+    col_ctrl_metrica, col_ctrl_escala = st.columns([1, 1])
+    with col_ctrl_metrica:
+        sel_metrica = st.radio(
+            "Variable de Dispersión:",
+            options=["Cuantía Contractual (COP)", "Plazo de Ejecución (Días)"],
+            horizontal=True,
+            key="radio_metrica_boxplot_analytics",
+            label_visibility="collapsed"
+        )
+    with col_ctrl_escala:
+        sel_escala = st.radio(
+            "Escala Numérica:",
+            options=["Escala Logarítmica", "Escala Lineal"],
+            horizontal=True,
+            key="radio_escala_boxplot_analytics",
+            label_visibility="collapsed"
+        )
+
+    metrica_cod = "cuantia_final" if "Cuantía" in sel_metrica else "plazo_dias"
+    escala_log_val = ("Logarítmica" in sel_escala)
+
+    fig_box = AnalyticsController.generar_grafica_boxplot_dispersion(
+        df,
+        metrica=metrica_cod,
+        escala_log=escala_log_val,
+        es_oscuro=es_oscuro
+    )
+    st.plotly_chart(fig_box, use_container_width=True, config={"displayModeBar": False})
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+
+    # Fila 4: Distribución Geográfica Departamental
     st.markdown(
         """
         <div class="executive-card">

@@ -111,7 +111,7 @@ class SecopETLPipeline:
     @staticmethod
     def _normalizar_texto(serie: pd.Series, a_mayusculas: bool = True) -> pd.Series:
         """Limpia caracteres extraños, espacios duplicados y estandariza mayúsculas."""
-        s = serie.fillna("NO REGISTRADO").astype(str).str.strip()
+        s = serie.astype(object).fillna("NO REGISTRADO").astype(str).str.strip()
         s = s.str.replace(r"\s+", " ", regex=True)
         if a_mayusculas:
             s = s.str.upper()
@@ -280,11 +280,11 @@ class SecopETLPipeline:
         self.ultimas_metricas_features = metricas_features
 
         # 4. Identificadores alfanuméricos y campos complementarios
-        df_enriquecido["nit_entidad"] = df_enriquecido["nit_entidad"].fillna("0").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-        df_enriquecido["documento_proveedor"] = df_enriquecido["documento_proveedor"].fillna("0").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-        df_enriquecido["codigo_proceso"] = df_enriquecido["codigo_proceso"].fillna("").astype(str).str.strip()
+        df_enriquecido["nit_entidad"] = df_enriquecido["nit_entidad"].astype(str).replace({"nan": "0", "None": "0", "<NA>": "0"}).str.replace(r"\.0$", "", regex=True).str.strip()
+        df_enriquecido["documento_proveedor"] = df_enriquecido["documento_proveedor"].astype(str).replace({"nan": "0", "None": "0", "<NA>": "0"}).str.replace(r"\.0$", "", regex=True).str.strip()
+        df_enriquecido["codigo_proceso"] = df_enriquecido["codigo_proceso"].astype(str).replace({"nan": "", "None": "", "<NA>": ""}).str.strip()
         df_enriquecido["id_contrato"] = df_enriquecido["id_contrato"].astype(str).str.strip()
-        df_enriquecido["codigo_unspsc"] = df_enriquecido["codigo_unspsc"].fillna("No Registrado").astype(str).str.strip()
+        df_enriquecido["codigo_unspsc"] = df_enriquecido["codigo_unspsc"].astype(str).replace({"nan": "No Registrado", "None": "No Registrado", "<NA>": "No Registrado"}).str.strip()
 
         # 5. Tipado booleano de pyme
         df_enriquecido["es_pyme"] = self._parsear_booleano(df_enriquecido["es_pyme"])

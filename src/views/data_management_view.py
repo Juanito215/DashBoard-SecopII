@@ -1,6 +1,6 @@
 """
 Vista de Gestión de Datos y Pipeline ETL Corporativo
-Sincronización NoSQL, Salud del Repositorio y Depuración de Datos
+Sincronización NoSQL, Salud del Repositorio, Ingesta Multi-Dataset y Depuración de Datos
 SECOP-Analytics | Universidad del Valle - Sede Tuluá
 """
 from __future__ import annotations
@@ -13,18 +13,24 @@ import streamlit as st
 
 from src.database.connection import MongoConnectionSingleton
 from src.database.data_repository import get_data_repository
+from src.database.dataset_manager import get_dataset_manager, MultiDatasetManager
+from src.utils.exceptions import (
+    DatasetDuplicadoError,
+    FormatoInconsistenteError,
+    LimiteDatasetsExcedidoError,
+)
 from src.etl.etl_pipeline import SecopETLPipeline
 from src.views.components import render_topbar, render_kpi_card
 
 
 def render_data_management_view(usuario: dict[str, Any]) -> None:
     """
-    Renderiza la vista corporativa de Gestión de Datos y ETL.
+    Renderiza la vista corporativa de Gestión de Datos, Ingesta Multi-Dataset y ETL.
     Aplica control de acceso restringiendo acciones de recarga a usuarios Administradores.
     """
     render_topbar(
         titulo="Gestión de Datos",
-        subtitulo="Sincronización, auditoría de calidad e ingesta masiva del repositorio central",
+        subtitulo="Sincronización multi-dataset, auditoría criptográfica e ingesta masiva del repositorio central",
         etiqueta_fecha="Flujo Automatizado"
     )
 
@@ -32,7 +38,7 @@ def render_data_management_view(usuario: dict[str, Any]) -> None:
     permisos = usuario.get("permisos", [])
     es_admin = (rol == "Admin") or ("etl_carga" in permisos)
 
-    # Control de Acceso Corporativo (Criterio 4.D)
+    # Control de Acceso Corporativo
     if not es_admin:
         st.markdown(
             """
@@ -41,7 +47,7 @@ def render_data_management_view(usuario: dict[str, Any]) -> None:
                     Módulo Administrativo Restringido
                 </div>
                 <div style="color: var(--text-muted); font-size: 0.92rem; line-height: 1.5;">
-                    La sincronización masiva, ingesta de lotes y depuración del repositorio NoSQL requiere privilegios 
+                    La sincronización masiva, ingesta multi-dataset y depuración del repositorio NoSQL requiere privilegios 
                     de <strong>Administrador del Sistema</strong>. Su rol actual dispone de permisos exclusivos para 
                     consulta, analítica y visualización de datos.
                 </div>
@@ -50,9 +56,12 @@ def render_data_management_view(usuario: dict[str, Any]) -> None:
             unsafe_allow_html=True
         )
 
-    # Repositorio Singleton
+    # Gestor de Datasets y Repositorio Singleton
+    mgr = get_dataset_manager()
     repo = get_data_repository()
-    if not repo.esta_cargado():
+
+    # Si el gestor no tiene datasets pero el repositorio sí tiene datos cargados, o viceversa
+    if not repo.esta_cargado() and mgr.total_datasets() == 0:
         with st.spinner("Inicializando conexión con el repositorio analítico..."):
             repo.cargar_fuente()
 
@@ -72,6 +81,12 @@ def render_data_management_view(usuario: dict[str, Any]) -> None:
     except Exception:
         estado_mongo = "Local (Modo Memoria)"
 
+    # Formato activo y conteo de datasets
+    formato_activo = mgr.obtener_formato_activo()
+    formato_str = formato_activo.upper() if formato_activo else "CSV (Defecto)"
+    total_lotes = mgr.total_datasets()
+    etiqueta_lotes = f"{total_lotes} / 10 Archivos" if total_lotes > 0 else "Muestra Base (1)"
+
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
@@ -85,7 +100,7 @@ def render_data_management_view(usuario: dict[str, Any]) -> None:
 
     with c2:
         render_kpi_card(
-            titulo="Registros en Memoria",
+            titulo="Registros Consolidados",
             valor=f"{total_registros:,}".replace(",", "."),
             tendencia=f"{columnas_detectadas} Dimensiones",
             icono_key="contract",
@@ -102,54 +117,119 @@ def render_data_management_view(usuario: dict[str, Any]) -> None:
         )
 
     with c4:
-        tiempo_ingesta = metricas.get("tiempo_segundos", 1.85)
         render_kpi_card(
-            titulo="Tiempo de Ingesta",
-            valor=f"{tiempo_ingesta:.2f} s",
-            tendencia="Procesamiento vectorizado",
+            titulo="Lotes Multi-Dataset",
+            valor=etiqueta_lotes,
+            tendencia=f"Formato: {formato_str}",
             icono_key="addition",
             color_circulo="purple"
         )
 
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
-    # Panel de Acciones de Sincronización (Solo Administrador)
+    # Panel de Acciones de Sincronización e Ingesta Multi-Dataset (Solo Administrador)
     if es_admin:
         st.markdown(
             """
             <div class="executive-card">
                 <div class="card-header-flex">
-                    <h3 class="card-title">Acciones de Sincronización y Carga Masiva</h3>
+                    <h3 class="card-title">Acciones de Ingesta Multi-Dataset y Sincronización</h3>
                     <span class="card-action">Privilegios de Administrador</span>
                 </div>
             """,
             unsafe_allow_html=True
         )
 
-        col_sync1, col_sync2 = st.columns([60, 40])
+        col_sync1, col_sync2 = st.columns([65, 35])
 
         with col_sync1:
-            archivo_subido = st.file_uploader(
-                "Cargar nuevo lote de datos SECOP II (Formato CSV):",
-                type=["csv"],
+            archivos_subidos = st.file_uploader(
+                "Cargar lotes de datos SECOP II (Formatos soportados: CSV o Parquet):",
+                type=["csv", "parquet"],
+                accept_multiple_files=True,
                 key="uploader_gestion_datos",
-                help="Sincroniza un archivo CSV actualizado de contratación pública."
+                help="Sincroniza múltiples archivos anuales (2021–2026) en formato CSV o Parquet (hasta 10 lotes). Cada lote debe tener un tamaño de hasta 2048 MB."
             )
-            if archivo_subido is not None:
-                if st.button("Procesar e Ingestar Lote Subido", type="primary"):
-                    with st.spinner("Procesando y depurando lote masivo..."):
-                        df_n, met_n = repo.cargar_fuente(archivo_subido)
-                        st.success(f"Lote procesado exitosamente en {met_n.get('tiempo_segundos', 0)}s.")
+            if archivos_subidos:
+                if st.button("Procesar e Ingestar Lotes Subidos", type="primary"):
+                    archivos_procesados = 0
+                    errores = []
+                    with st.spinner("Procesando, deduplicando y consolidando lotes analíticos..."):
+                        for arch in archivos_subidos:
+                            try:
+                                mgr.cargar_archivo(arch)
+                                archivos_procesados += 1
+                            except DatasetDuplicadoError as err_dup:
+                                errores.append(f"Archivo Duplicado ({arch.name}): {err_dup}")
+                            except FormatoInconsistenteError as err_fmt:
+                                errores.append(f"Inconsistencia de Formato ({arch.name}): {err_fmt}")
+                            except LimiteDatasetsExcedidoError as err_lim:
+                                errores.append(f"Capacidad Excedida ({arch.name}): {err_lim}")
+                                break
+                            except Exception as ex:
+                                errores.append(f"Error procesando {arch.name}: {ex}")
+
+                    if archivos_procesados > 0:
+                        st.success(
+                            f"Se procesaron e integraron exitosamente {archivos_procesados} lote(s) al repositorio analítico consolidado."
+                        )
+                    for err in errores:
+                        st.error(err)
+                    if archivos_procesados > 0:
                         st.rerun()
 
         with col_sync2:
             st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
-            if st.button("Re-sincronizar Muestra Local (10.000 Contratos)", use_container_width=True, type="secondary"):
-                with st.spinner("Re-sincronizando dataset analítico..."):
-                    df_r, met_r = repo.cargar_fuente()
-                    st.success(f"Repositorio sincronizado en {met_r.get('tiempo_segundos', 0)}s.")
+            if st.button("Limpiar Repositorio", use_container_width=True, type="secondary"):
+                with st.spinner("Purgando memoria y restableciendo repositorio..."):
+                    mgr.limpiar_repositorio()
+                    st.success("Repositorio vaciado y formato restablecido correctamente.")
                     st.rerun()
 
+            st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+            if st.button("Re-sincronizar Muestra Local (10.000 Contratos)", use_container_width=True, type="secondary"):
+                with st.spinner("Re-sincronizando dataset analítico..."):
+                    mgr.limpiar_repositorio()
+                    repo = get_data_repository()
+                    repo.cargar_fuente()
+                    st.success("Repositorio sincronizado con la muestra local de 10.000 contratos.")
+                    st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Detalle de Datasets Activos en el Repositorio
+    datasets_activos = mgr.obtener_datasets()
+    if datasets_activos:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="executive-card">
+                <div class="card-header-flex">
+                    <div>
+                        <h3 class="card-title">Inventario de Lotes Cargados en Memoria ({len(datasets_activos)} / 10)</h3>
+                        <div style="font-size: 0.84rem; color: var(--text-muted); margin-top: 2px;">
+                            Seguimiento criptográfico y control de integridad de los datasets activos
+                        </div>
+                    </div>
+                    <span class="card-action">Consistencia Activa: {formato_str}</span>
+                </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        filas_inventario = []
+        for idx, ds in enumerate(datasets_activos, 1):
+            filas_inventario.append({
+                "Nro": idx,
+                "Nombre del Archivo": ds["nombre"],
+                "Formato": ds["formato"].upper(),
+                "Registros": f"{ds['registros']:,}".replace(",", "."),
+                "Columnas": ds["columnas"],
+                "Memoria RAM": f"{ds['memoria_mb']:.2f} MB",
+                "Huella SHA-256": f"{ds['hash_sha256'][:16]}...",
+                "Estado": "Consolidado"
+            })
+        st.dataframe(pd.DataFrame(filas_inventario), use_container_width=True, hide_index=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     # Resumen de Calidad y Depuración de Datos
@@ -209,7 +289,7 @@ def render_data_management_view(usuario: dict[str, Any]) -> None:
         '<span style="background-color: var(--tag-bg); color: var(--tag-text); font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 6px;">Fase Extract</span>'
         '</div>'
         '<div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">'
-        'Lectura masiva de procesos contractuales desde el catálogo de Datos Abiertos (SECOP II). Se implementa carga optimizada en memoria RAM mediante el patrón Singleton y un mapeo dinámico y tolerante a más de 30 variantes de nombres de columnas.'
+        'Lectura masiva de procesos contractuales desde el catálogo de Datos Abiertos (SECOP II) en formatos CSV o Parquet con PyArrow. Ingesta multi-archivo consolidada en memoria RAM y deduplicación por identificador de proceso.'
         '</div>'
         '</div>'
         '</div>'

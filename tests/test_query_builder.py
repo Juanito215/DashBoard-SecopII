@@ -122,6 +122,30 @@ def sample_dataframe() -> pd.DataFrame:
             "Terminado",
             "Celebrado",
             "En ejecución"
+        ],
+        "es_pyme": [
+            True,
+            False,
+            True,
+            False,
+            True,
+            True,
+            False,
+            False,
+            True,
+            False
+        ],
+        "codigo_unspsc": [
+            "72141103",
+            "72141100",
+            "V1.80111600",
+            "43211500",
+            "51101500",
+            "V1.72141103",
+            "81101500",
+            "80131500",
+            "43231500",
+            "72101500"
         ]
     }
     return pd.DataFrame(data)
@@ -1842,6 +1866,514 @@ def test_apptest_filtrado_proveedor_ui():
     assert len(inputs_prov) >= 1
     inputs_prov[0].input("Rivera").run()
     assert len(at.exception) == 0
+
+
+# ==============================================================================
+# PRUEBAS AUTOMATIZADAS HU-16: FILTRADO POR PARTICIPACIÓN DE PYMES
+# ==============================================================================
+
+def test_builder_con_es_pyme_true(sample_dataframe: pd.DataFrame):
+    """
+    HU-16: Valida el filtrado exclusivo por PYMES con valor booleano True.
+    Verifica reducción precisa en DataFrame y predicado compilado en MongoDB.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_pyme, query_mongo, latencia_ms = builder.con_es_pyme(True).build()
+
+    assert len(df_pyme) == 5
+    assert (df_pyme["es_pyme"] == True).all()
+    assert query_mongo.get("proveedor.es_pyme") is True
+    assert any("proveedor.es_pyme == True" in f for f in builder.obtener_filtros_aplicados())
+    assert latencia_ms >= 0.0
+
+
+def test_builder_con_es_pyme_false(sample_dataframe: pd.DataFrame):
+    """
+    HU-16: Valida el filtrado por empresas NO PYMES / Grandes Empresas (False).
+    Verifica que se recuperen únicamente registros no pertenecientes al segmento PYME.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_no_pyme, query_mongo, latencia_ms = builder.con_es_pyme(False).build()
+
+    assert len(df_no_pyme) == 5
+    assert (df_no_pyme["es_pyme"] == False).all()
+    assert query_mongo.get("proveedor.es_pyme") is False
+    assert any("proveedor.es_pyme == False" in f for f in builder.obtener_filtros_aplicados())
+    assert latencia_ms >= 0.0
+
+
+def test_builder_con_es_pyme_str_solo_pymes(sample_dataframe: pd.DataFrame):
+    """
+    HU-16: Valida compatibilidad con etiquetas textuales de UI para Solo PYMES.
+    Admite 'Solo PYMES', 'pyme', 'sí', etc.
+    """
+    for valor_txt in ["Solo PYMES", "pyme", "sí", "si"]:
+        builder = ConsultaSecopBuilder(sample_dataframe)
+        df_res, query_mongo, _ = builder.con_es_pyme(valor_txt).build()
+        assert len(df_res) == 5
+        assert query_mongo.get("proveedor.es_pyme") is True
+
+
+def test_builder_con_es_pyme_str_no_pymes(sample_dataframe: pd.DataFrame):
+    """
+    HU-16: Valida compatibilidad con etiquetas textuales de UI para Gran Empresa.
+    Admite 'No PYMES / Gran Empresa', 'no pymes', 'gran empresa', etc.
+    """
+    for valor_txt in ["No PYMES / Gran Empresa", "no pymes", "gran empresa", "no"]:
+        builder = ConsultaSecopBuilder(sample_dataframe)
+        df_res, query_mongo, _ = builder.con_es_pyme(valor_txt).build()
+        assert len(df_res) == 5
+        assert query_mongo.get("proveedor.es_pyme") is False
+
+
+def test_builder_con_es_pyme_todas_o_none(sample_dataframe: pd.DataFrame):
+    """
+    HU-16: Valida que None o 'Todas las empresas' no restrinja registros
+    ni añada claves espurias al diccionario de MongoDB.
+    """
+    for valor_neutro in [None, "Todas las empresas", "Todas", ""]:
+        builder = ConsultaSecopBuilder(sample_dataframe)
+        df_res, query_mongo, _ = builder.con_es_pyme(valor_neutro).build()
+        assert len(df_res) == 10
+        assert "proveedor.es_pyme" not in query_mongo
+
+
+def test_builder_alias_filtrar_pyme(sample_dataframe: pd.DataFrame):
+    """
+    HU-16: Valida el alias semántico .filtrar_pyme().
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_alias, query_mongo, _ = builder.filtrar_pyme(True).build()
+    assert len(df_alias) == 5
+    assert query_mongo.get("proveedor.es_pyme") is True
+
+
+def test_builder_encadenamiento_completo_9_dimensiones(sample_dataframe: pd.DataFrame):
+    """
+    HU-16: Valida el encadenamiento fluido de las 9 dimensiones analíticas:
+    1. Departamento
+    2. Municipio
+    3. Vigencia fiscal (Año)
+    4. Modalidad
+    5. Tipo de contrato
+    6. Cuantía (mínima y máxima)
+    7. Entidad compradora
+    8. Proveedor contratista
+    9. Participación de PYMES
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_res, query_mongo, latencia_ms = (
+        builder
+        .filtrar_departamento(["VALLE DEL CAUCA"])
+        .filtrar_municipio(["Tuluá"])
+        .filtrar_anio(2023)
+        .filtrar_modalidad(["CONTRATACIÓN DIRECTA"])
+        .con_tipo_contrato(["PRESTACIÓN DE SERVICIOS"])
+        .con_rango_cuantia(min_cop=500.0, max_cop=700.0)
+        .con_entidad_o_nit("Alcaldía")
+        .con_proveedor("Rivera")
+        .con_es_pyme(True)
+        .build()
+    )
+
+    assert len(df_res) == 1
+    assert df_res.iloc[0]["id_contrato"] == "CO1.PCONTR.6"
+    assert bool(df_res.iloc[0]["es_pyme"]) is True
+    assert query_mongo.get("proveedor.es_pyme") is True
+    assert "$and" in query_mongo
+    assert latencia_ms >= 0.0
+
+
+def test_resumen_fomento_productivo_pyme(sample_dataframe: pd.DataFrame):
+    """
+    HU-16 Criterio 3: Valida los cálculos del indicador de Fomento Productivo:
+    - Porcentaje de procesos adjudicados a PYMES.
+    - Cuantía total adjudicada a PYMES (en COP).
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_pyme, _, _ = builder.con_es_pyme(True).build()
+
+    total_proc = len(sample_dataframe)
+    total_pymes = len(df_pyme)
+    pct_pymes = (total_pymes / total_proc) * 100.0
+    cuantia_pymes = df_pyme["cuantia_inicial"].sum()
+
+    assert total_pymes == 5
+    assert pct_pymes == 50.0
+    assert cuantia_pymes > 0
+
+
+def test_rendimiento_filtrado_pyme_menor_500ms(real_10k_dataframe: pd.DataFrame):
+    """
+    HU-16 / Regla 4 / Rendimiento:
+    Verifica que el filtrado por PYME sobre 10.000 contratos reales
+    se ejecute en menos de 500 ms.
+    """
+    builder = ConsultaSecopBuilder(real_10k_dataframe)
+    inicio = time.perf_counter()
+    df_pymes, query_mongo, _ = builder.con_es_pyme(True).build()
+    duracion_ms = (time.perf_counter() - inicio) * 1000.0
+
+    assert duracion_ms < 500.0, f"Filtrado PYME excedió 500 ms ({duracion_ms:.2f} ms)"
+    assert len(df_pymes) == 575
+    assert query_mongo.get("proveedor.es_pyme") is True
+
+
+def test_apptest_filtrado_pyme_ui():
+    """
+    HU-16 / Prueba de integración UI con Streamlit AppTest:
+    1. Iniciar sesión como Analista_BI
+    2. Navegar al Explorador de Contratos
+    3. Comprobar presencia del radio tri-estado de PYMES
+    4. Seleccionar 'Solo PYMES' y verificar ejecución reactiva sin excepciones.
+    """
+    from streamlit.testing.v1 import AppTest
+    from src.database.data_repository import DataRepositorySingleton
+
+    repo = DataRepositorySingleton.get_instance()
+    repo.cargar_fuente()
+
+    ruta_app = str(Path(__file__).resolve().parent.parent / "app.py")
+    at = AppTest.from_file(ruta_app).run()
+
+    # Iniciar sesión
+    at.text_input[0].input("analista@secopanalytics.gov.co")
+    at.text_input[1].input("Secop2026*")
+    at.button[0].click().run()
+
+    assert at.session_state.get("autenticado") is True
+    assert len(at.exception) == 0
+
+    # Navegar al Explorador de Contratos
+    if at.sidebar.radio:
+        at.sidebar.radio[0].set_value("Explorador de Contratos").run()
+
+    # Comprobar radio de PYMES en la vista
+    radios_pyme = [r for r in at.radio if "filtro_pyme" in getattr(r, "key", "")]
+    if not radios_pyme:
+        radios_pyme = [r for r in at.radio if "PYME" in getattr(r, "label", "")]
+
+    assert len(radios_pyme) >= 1
+    # Cambiar opción a 'Solo PYMES'
+    radios_pyme[0].set_value("Solo PYMES").run()
+    assert len(at.exception) == 0
+
+
+# ==============================================================================
+# PRUEBAS AUTOMATIZADAS HU-17: FILTRADO POR CLASIFICADOR UNSPSC
+# ==============================================================================
+
+def test_builder_con_codigo_unspsc_codigo_completo(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida búsqueda por código completo UNSPSC de 8 dígitos ('72141103').
+    Verifica coincidencia exacta tanto en registros estándar como con prefijo 'V1.'.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_res, query_mongo, latencia_ms = builder.con_codigo_unspsc("72141103").build()
+
+    assert len(df_res) == 2
+    assert set(df_res["id_contrato"]) == {"CO1.PCONTR.1", "CO1.PCONTR.6"}
+    assert "clasificacion.codigo_unspsc" in query_mongo
+    assert query_mongo["clasificacion.codigo_unspsc"]["$regex"] == "^(V1\\.)?72141103"
+    assert any("clasificacion.codigo_unspsc" in f for f in builder.obtener_filtros_aplicados())
+    assert latencia_ms >= 0.0
+
+
+def test_builder_con_codigo_unspsc_prefijo_familia(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida búsqueda jerárquica por familia de 4 dígitos ('7214').
+    Recupera todos los productos y servicios bajo esa familia de insumos.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_res, query_mongo, _ = builder.con_codigo_unspsc("7214").build()
+
+    assert len(df_res) == 3
+    assert set(df_res["id_contrato"]) == {"CO1.PCONTR.1", "CO1.PCONTR.2", "CO1.PCONTR.6"}
+    assert query_mongo["clasificacion.codigo_unspsc"]["$regex"] == "^(V1\\.)?7214"
+
+
+def test_builder_con_codigo_unspsc_prefijo_segmento(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida búsqueda de alto nivel por segmento de 2 dígitos ('72' Edificación y Construcción).
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_res, query_mongo, _ = builder.con_codigo_unspsc("72").build()
+
+    assert len(df_res) == 4
+    assert set(df_res["id_contrato"]) == {"CO1.PCONTR.1", "CO1.PCONTR.2", "CO1.PCONTR.6", "CO1.PCONTR.10"}
+
+
+def test_builder_con_codigo_unspsc_con_prefijo_v1_usuario(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida tolerancia ante entradas del usuario que incluyan el prefijo 'V1.'.
+    El sistema debe limpiar el prefijo y buscar por la raíz numérica.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_res, query_mongo, _ = builder.con_codigo_unspsc("V1.7214").build()
+
+    assert len(df_res) == 3
+    assert set(df_res["id_contrato"]) == {"CO1.PCONTR.1", "CO1.PCONTR.2", "CO1.PCONTR.6"}
+    assert query_mongo["clasificacion.codigo_unspsc"]["$regex"] == "^(V1\\.)?7214"
+
+
+def test_builder_con_codigo_unspsc_vacio_o_none(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida que None, cadenas vacías o solo espacios no restrinjan datos
+    ni agreguen claves al predicado de MongoDB.
+    """
+    for valor_invalido in [None, "", "   ", "\t"]:
+        builder = ConsultaSecopBuilder(sample_dataframe)
+        df_res, query_mongo, _ = builder.con_codigo_unspsc(valor_invalido).build()
+        assert len(df_res) == 10
+        assert "clasificacion.codigo_unspsc" not in query_mongo
+
+
+def test_builder_con_codigo_unspsc_sin_coincidencias(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida comportamiento ante un código inexistente.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_res, query_mongo, _ = builder.con_codigo_unspsc("99999999").build()
+
+    assert len(df_res) == 0
+    assert "clasificacion.codigo_unspsc" in query_mongo
+
+
+def test_builder_alias_filtrar_unspsc(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida el alias semántico .filtrar_unspsc().
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_alias, query_mongo, _ = builder.filtrar_unspsc("80").build()
+
+    assert len(df_alias) == 2
+    assert set(df_alias["id_contrato"]) == {"CO1.PCONTR.3", "CO1.PCONTR.8"}
+    assert query_mongo["clasificacion.codigo_unspsc"]["$regex"] == "^(V1\\.)?80"
+
+
+def test_builder_encadenamiento_completo_10_dimensiones(sample_dataframe: pd.DataFrame):
+    """
+    HU-17: Valida el encadenamiento fluido de las 10 dimensiones analíticas del Builder:
+    1. Departamento
+    2. Municipio
+    3. Vigencia fiscal (Año)
+    4. Modalidad
+    5. Tipo de contrato
+    6. Cuantía (mínima y máxima)
+    7. Entidad compradora
+    8. Proveedor contratista
+    9. Participación PYME
+    10. Clasificador UNSPSC
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    df_res, query_mongo, latencia_ms = (
+        builder
+        .filtrar_departamento(["VALLE DEL CAUCA"])
+        .filtrar_municipio(["Tuluá"])
+        .filtrar_anio(2023)
+        .filtrar_modalidad(["CONTRATACIÓN DIRECTA"])
+        .con_tipo_contrato(["PRESTACIÓN DE SERVICIOS"])
+        .con_rango_cuantia(min_cop=500.0, max_cop=700.0)
+        .con_entidad_o_nit("Alcaldía")
+        .con_proveedor("Rivera")
+        .con_es_pyme(True)
+        .con_codigo_unspsc("7214")
+        .build()
+    )
+
+    assert len(df_res) == 1
+    assert df_res.iloc[0]["id_contrato"] == "CO1.PCONTR.6"
+    assert bool(df_res.iloc[0]["es_pyme"]) is True
+    assert query_mongo.get("proveedor.es_pyme") is True
+    assert "clasificacion.codigo_unspsc" in query_mongo
+    assert latencia_ms >= 0.0
+
+
+def test_rendimiento_filtrado_unspsc_menor_500ms(real_10k_dataframe: pd.DataFrame):
+    """
+    HU-17 / Rendimiento:
+    Verifica que el filtrado por UNSPSC sobre 10.000 contratos reales
+    se resuelva en menos de 500 ms.
+    """
+    builder = ConsultaSecopBuilder(real_10k_dataframe)
+    inicio = time.perf_counter()
+    df_res, query_mongo, _ = builder.con_codigo_unspsc("80").build()
+    duracion_ms = (time.perf_counter() - inicio) * 1000.0
+
+    assert duracion_ms < 500.0, f"Filtrado UNSPSC excedió 500 ms ({duracion_ms:.2f} ms)"
+    assert len(df_res) > 0
+    assert "clasificacion.codigo_unspsc" in query_mongo
+
+
+def test_apptest_filtrado_unspsc_ui():
+    """
+    HU-17 / Prueba de integración UI con Streamlit AppTest:
+    1. Iniciar sesión como Analista_BI
+    2. Navegar al Explorador de Contratos
+    3. Comprobar presencia del input de texto de UNSPSC
+    4. Ingresar código/familia y verificar ejecución reactiva sin excepciones.
+    """
+    from streamlit.testing.v1 import AppTest
+    from src.database.data_repository import DataRepositorySingleton
+
+    repo = DataRepositorySingleton.get_instance()
+    repo.cargar_fuente()
+
+    ruta_app = str(Path(__file__).resolve().parent.parent / "app.py")
+    at = AppTest.from_file(ruta_app).run()
+
+    # Iniciar sesión
+    at.text_input[0].input("analista@secopanalytics.gov.co")
+    at.text_input[1].input("Secop2026*")
+    at.button[0].click().run()
+
+    assert at.session_state.get("autenticado") is True
+    assert len(at.exception) == 0
+
+    # Navegar al Explorador de Contratos
+    if at.sidebar.radio:
+        at.sidebar.radio[0].set_value("Explorador de Contratos").run()
+
+    # Comprobar input de UNSPSC en la vista
+    inputs_unspsc = [inp for inp in at.text_input if "filtro_unspsc" in getattr(inp, "key", "")]
+    if not inputs_unspsc:
+        inputs_unspsc = [inp for inp in at.text_input if "UNSPSC" in getattr(inp, "label", "")]
+
+    assert len(inputs_unspsc) >= 1
+    # Ingresar código UNSPSC
+    inputs_unspsc[0].input("80").run()
+    assert len(at.exception) == 0
+
+
+# ==============================================================================
+# PRUEBAS AUTOMATIZADAS HU-18: RESTABLECIMIENTO GLOBAL DE FILTROS / RESET
+# ==============================================================================
+
+def test_builder_reset_metodo_encadenado_limpia_todo(sample_dataframe: pd.DataFrame):
+    """
+    HU-18 / Criterio 2: Valida que el método fluido .reset() restaure completamente:
+    - self._df_filtrado igual a una copia íntegra de self._df_original
+    - self._query_mongo vacío ({})
+    - self._tiempo_ms reiniciado a 0.0
+    - self._filtros_aplicados vacío ([])
+    - Retorno de la misma instancia del Builder para permitir encadenamiento.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    (
+        builder
+        .filtrar_departamento(["ANTIOQUIA"])
+        .filtrar_modalidad(["CONTRATACIÓN DIRECTA"])
+        .con_rango_cuantia(min_cop=100.0, max_cop=500.0)
+        .con_es_pyme(True)
+        .con_codigo_unspsc("72")
+    )
+
+    # Validar que los filtros se aplicaron
+    assert builder.contar_registros() < len(sample_dataframe)
+    assert len(builder.obtener_query_mongo()) > 0
+    assert len(builder.obtener_filtros_aplicados()) > 0
+    assert builder.obtener_tiempo_ms() >= 0.0
+
+    # Ejecutar reset
+    instancia_retornada = builder.reset()
+
+    # Validaciones posteriores al reset
+    assert instancia_retornada is builder
+    assert builder.contar_registros() == len(sample_dataframe)
+    assert builder.obtener_query_mongo() == {}
+    assert builder.obtener_tiempo_ms() == 0.0
+    assert builder.obtener_filtros_aplicados() == []
+    df_res, query_res, lat_res = builder.build()
+    assert len(df_res) == len(sample_dataframe)
+    assert query_res == {}
+    assert lat_res == 0.0
+
+
+def test_builder_reutilizacion_post_reset(sample_dataframe: pd.DataFrame):
+    """
+    HU-18: Valida que tras un reset, la instancia del Builder pueda ser reutilizada
+    en un nuevo ciclo de filtrado sin que queden residuos del ciclo anterior.
+    """
+    builder = ConsultaSecopBuilder(sample_dataframe)
+    builder.filtrar_departamento(["ANTIOQUIA"]).con_es_pyme(False)
+    assert builder.contar_registros() == 1
+
+    # Reset y nuevo ciclo con otros criterios
+    builder.reset().filtrar_departamento(["VALLE DEL CAUCA"]).con_es_pyme(True)
+    assert builder.contar_registros() == 1
+    assert "ANTIOQUIA" not in str(builder.obtener_query_mongo())
+    assert builder.obtener_query_mongo().get("proveedor.es_pyme") is True
+
+
+def test_apptest_restablecer_filtros_global_ui():
+    """
+    HU-18 / Criterio 1 y 3: Prueba de integración con Streamlit AppTest:
+    1. Iniciar sesión como Analista_BI
+    2. Navegar al Explorador de Contratos
+    3. Aplicar filtros en la UI (entidad, pyme, unspsc)
+    4. Accionar el botón 'Restablecer Filtros'
+    5. Comprobar que:
+       - No se perdió la sesión (autenticado sigue siendo True).
+       - Los valores de los filtros volvieron a sus defaults.
+       - No se arrojaron excepciones en la ejecución reactiva.
+    """
+    from streamlit.testing.v1 import AppTest
+    from src.database.data_repository import DataRepositorySingleton
+
+    repo = DataRepositorySingleton.get_instance()
+    repo.cargar_fuente()
+
+    ruta_app = str(Path(__file__).resolve().parent.parent / "app.py")
+    at = AppTest.from_file(ruta_app).run()
+
+    # Iniciar sesión
+    at.text_input[0].input("analista@secopanalytics.gov.co")
+    at.text_input[1].input("Secop2026*")
+    at.button[0].click().run()
+
+    assert at.session_state.get("autenticado") is True
+    assert len(at.exception) == 0
+
+    # Navegar al Explorador de Contratos
+    if at.sidebar.radio:
+        at.sidebar.radio[0].set_value("Explorador de Contratos").run()
+
+    # Modificar filtros
+    inputs_entidad = [inp for inp in at.text_input if "filtro_entidad" in getattr(inp, "key", "")]
+    if inputs_entidad:
+        inputs_entidad[0].input("Alcaldía").run()
+
+    radios_pyme = [r for r in at.radio if "filtro_pyme" in getattr(r, "key", "")]
+    if radios_pyme:
+        radios_pyme[0].set_value("Solo PYMES").run()
+
+    # Encontrar botón Restablecer Filtros
+    botones_reset = [
+        b for b in at.button
+        if "restablecer" in (getattr(b, "key", None) or "").lower()
+        or "restablecer" in (getattr(b, "label", None) or "").lower()
+    ]
+    assert len(botones_reset) >= 1
+
+    # Pulsar botón de restablecimiento
+    botones_reset[0].click().run()
+
+    # Verificar que la sesión autenticada se conserva
+    assert at.session_state.get("autenticado") is True
+    assert at.session_state.get("usuario_datos") is not None
+    assert len(at.exception) == 0
+
+    # Verificar que los widgets retornaron a sus valores predeterminados
+    inputs_entidad_post = [inp for inp in at.text_input if "filtro_entidad" in getattr(inp, "key", "")]
+    if inputs_entidad_post:
+        assert inputs_entidad_post[0].value == ""
+
+    radios_pyme_post = [r for r in at.radio if "filtro_pyme" in getattr(r, "key", "")]
+    if radios_pyme_post:
+        assert radios_pyme_post[0].value == "Todas las empresas"
+
+
+
 
 
 
